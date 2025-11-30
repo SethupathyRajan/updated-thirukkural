@@ -1,0 +1,7 @@
+Flask==2.3.3
+SpeechRecognition==3.8.1
+PythonDNS==0.1
+werkzeug==2.3.7
+passlib==1.7.4
+pymongo[srv]==4.5.0
+gunicorn==21.2.0
