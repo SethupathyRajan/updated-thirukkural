@@ -236,42 +236,68 @@ class kural:
             if 'kural' not in kuralData or len(kuralData['kural']) < 2:
                 return jsonify({"error": "Invalid kural structure"}), 400
             
-            # Randomly choose line1 or line2
-            line_choice = random.randint(0, 1)
-            chosen_line = kuralData['kural'][line_choice][0] if len(kuralData['kural'][line_choice]) > 0 else ""
-            
-            # Split line into words
-            words = [w.strip() for w in chosen_line.split() if w.strip()] if chosen_line else []
-            
-            # If line has less than 2 words, try the other line
+            # We'll present the full kural (both lines) and mask two words across the combined lines
+            line1 = kuralData['kural'][0][0] if len(kuralData['kural'][0]) > 0 else ""
+            line2 = kuralData['kural'][1][0] if len(kuralData['kural'][1]) > 0 else ""
+            full_line = (line1 + ' ' + line2).strip()
+
+            words = [w.strip() for w in full_line.split() if w.strip()]
+
             if len(words) < 2:
-                line_choice = 1 - line_choice
-                chosen_line = kuralData['kural'][line_choice][0] if len(kuralData['kural'][line_choice]) > 0 else ""
-                words = [w.strip() for w in chosen_line.split() if w.strip()] if chosen_line else []
-            
-            # If still no valid words, return error
-            if len(words) < 1:
-                return jsonify({"error": "Kural has no valid words"}), 400
-            
-            # Randomly select a word to mask (avoid first and last for better context)
-            if len(words) > 2:
-                masked_index = random.randint(1, len(words) - 2)
-            else:
-                masked_index = random.randint(0, len(words) - 1)
-            
-            correct_word = words[masked_index]
-            
-            # Create masked line
-            masked_words = words.copy()
-            masked_words[masked_index] = "_____"
-            masked_line = " ".join(masked_words)
-            
+                return jsonify({"error": "Kural has insufficient words"}), 400
+
+            # Choose two distinct indices to mask. Prefer avoiding first/last if possible
+            possible_indices = list(range(len(words)))
+            if len(words) > 4:
+                avoid = {0, len(words)-1}
+                possible_indices = [i for i in possible_indices if i not in avoid]
+
+            masked_indices = random.sample(possible_indices, k=2 if len(possible_indices) >= 2 else 1)
+
+            # Build masked display with underscores matching word length
+            correct_words = {}
+            for idx in masked_indices:
+                correct_words[str(idx)] = words[idx]
+
+            display_words = []
+            for i, w in enumerate(words):
+                if i in masked_indices:
+                    display_words.append('_' * max(3, len(w)))
+                else:
+                    display_words.append(w)
+
+            masked_line = ' '.join(display_words)
+
+            # Use same random options pool as fillups_game for distractors
+            options_pool = ["நீடுவாழ்", "யாண்டும்", "தாள்சேர்ந்தார்க்", "இனிய", "பயன்என்று",
+    "உளரென்று", "அன்போடு", "மணியினும்", "செல்வத்துள்", "சான்றோர்",
+    "மிகுத்து", "பெருக்கல்", "கேடில்லை", "இல்லாள்தன்", "நாடொறும்",
+    "மறந்தும்", "காதன்மை", "வாய்மை", "பொருட்டால்", "கேள்வி",
+    "மாண்ட", "படிபொறை", "தம்மைப்", "உளராக", "இடும்பை",
+    "சால்பின்", "துறந்தார்", "கொடியன", "நாணுடைமை", "விரும்பி",
+    "குழவி", "அம்மா", "நுகர்வார்", "அறத்தான்", "மாண்பு",
+    "தொடர்ந்து", "விளக்கம்", "முன்னேறல்", "நிலைமை", "ஒழுக்கம்",
+    "பிறப்பொடு", "துன்பம்", "தோன்றும்", "உணர்ச்சி", "உயர்ச்சி",
+    "அடக்கம்", "செல்வம்", "பெருமை", "நன்றி"]
+
+            options = {}
+            for idx in masked_indices:
+                pool = [w for w in options_pool if w != words[idx]]
+                random.shuffle(pool)
+                choices = pool[:3]
+                choices.append(words[idx])
+                random.shuffle(choices)
+                options[str(idx)] = choices
+
+            # Return full data including adhigaram/porul
             return jsonify({
                 "kural_id": random_kural_id,
-                "line_number": line_choice + 1,
+                "kural_lines": [line1, line2],
                 "masked_line": masked_line,
-                "masked_index": masked_index,
-                "correct_word": correct_word,
+                "masked_indices": masked_indices,
+                "correct_words": correct_words,
+                "options": options,
+                "aadhigaram": kuralData.get('aadhigaram', ''),
                 "porul": kuralData.get('porul', {})
             }), 200
 
@@ -280,21 +306,21 @@ class kural:
         if request.method == "POST":
             data = request.get_json()
             masked_line = data.get('masked_line', '')
-            masked_index = data.get('masked_index', -1)
-            
-            if not masked_line or masked_index < 0:
+            masked_indices = data.get('masked_indices', [])
+
+            if not masked_line or not isinstance(masked_indices, (list, tuple)) or len(masked_indices) == 0:
                 return jsonify({"error": "Invalid request"}), 400
-            
+
             start_time = time.time()
-            
-            # Get the N-gram model and make prediction
+
+            # Get the N-gram model and make predictions for each masked index
             model = get_model()
-            predicted_word = model.predict_from_line(masked_line, masked_index)
-            
+            predicted_words = model.predict_from_line(masked_line, masked_indices)
+
             elapsed_time_ms = int((time.time() - start_time) * 1000)
-            
+
             return jsonify({
-                "prediction": predicted_word or "",
+                "predictions": predicted_words or [],
                 "machine_time_ms": elapsed_time_ms
             }), 200
 
@@ -302,16 +328,39 @@ class kural:
         """Submit user score and save to MongoDB."""
         if request.method == "POST":
             data = request.get_json()
-            
-            # Get score data
+            # Get score data (support arrays for multiple masked words)
             kural_id = data.get('kural_id')
-            correct_word = data.get('correct_word', '')
-            user_answer = data.get('user_answer', '')
-            machine_prediction = data.get('machine_prediction', '')
-            user_correct = (user_answer.strip() == correct_word.strip())
-            machine_correct = (machine_prediction.strip() == correct_word.strip())
+            correct_words = data.get('correct_words') or {}
+            user_answers = data.get('user_answer') or []
+            machine_predictions = data.get('machine_prediction') or []
             user_time_ms = data.get('user_time_ms', 0)
             machine_time_ms = data.get('machine_time_ms', 0)
+
+            # Normalize to lists
+            if not isinstance(user_answers, list):
+                user_answers = [user_answers]
+            if not isinstance(machine_predictions, list):
+                machine_predictions = [machine_predictions]
+
+            # Determine per-word correctness
+            user_correct_flags = []
+            machine_correct_flags = []
+            # If correct_words is dict keyed by index strings, iterate by that order
+            keys = list(correct_words.keys()) if isinstance(correct_words, dict) else []
+            if keys:
+                for i, k in enumerate(keys):
+                    corr = correct_words.get(k, '').strip()
+                    ua = (user_answers[i].strip() if i < len(user_answers) and user_answers[i] else '').strip()
+                    ma = (machine_predictions[i].strip() if i < len(machine_predictions) and machine_predictions[i] else '').strip()
+                    user_correct_flags.append(ua == corr)
+                    machine_correct_flags.append(ma == corr)
+            else:
+                # Fallback: compare first entries
+                corr = data.get('correct_word', '')
+                ua = user_answers[0] if len(user_answers) > 0 else ''
+                ma = machine_predictions[0] if len(machine_predictions) > 0 else ''
+                user_correct_flags = [ua.strip() == corr.strip()]
+                machine_correct_flags = [ma.strip() == corr.strip()]
             
             # Get user info from session
             user_email = session.get('user', {}).get('email', '')
@@ -323,11 +372,11 @@ class kural:
                 "user_email": user_email,
                 "user_name": user_name,
                 "kural_id": int(kural_id),
-                "correct_word": correct_word,
-                "user_answer": user_answer,
-                "machine_prediction": machine_prediction,
-                "user_correct": user_correct,
-                "machine_correct": machine_correct,
+                "correct_words": correct_words,
+                "user_answers": user_answers,
+                "machine_predictions": machine_predictions,
+                "user_correct_flags": user_correct_flags,
+                "machine_correct_flags": machine_correct_flags,
                 "user_time_ms": int(user_time_ms),
                 "machine_time_ms": int(machine_time_ms),
                 "timestamp": datetime.now()
@@ -337,10 +386,14 @@ class kural:
             ngram_scores = db['ngram_game_scores']
             ngram_scores.insert_one(score_doc)
             
+            # Aggregate correctness
+            user_correct_all = all(user_correct_flags) if len(user_correct_flags) > 0 else False
+            machine_correct_all = all(machine_correct_flags) if len(machine_correct_flags) > 0 else False
+
             return jsonify({
                 "success": True,
-                "user_correct": user_correct,
-                "machine_correct": machine_correct
+                "user_correct": user_correct_all,
+                "machine_correct": machine_correct_all
             }), 200
 
     def ngram_leaderboard(self):

@@ -151,23 +151,37 @@ class NGramModel:
     
     def predict_from_line(self, line, masked_word_index):
         """
-        Predict missing word from a line of text with a masked word.
-        
+        Predict missing word(s) from a line of text with one or more masked words.
+        Supports passing a single masked index (int) or a list of indices.
+
         Args:
             line: Text line with a masked word (represented as "_____")
-            masked_word_index: Index of the masked word (0-based)
-            
+            masked_word_index: Index of the masked word (0-based) or list of indices
+
         Returns:
-            Predicted word (string) or None
+            If single index passed: predicted word (string) or None
+            If list passed: list of predicted words (string or None)
         """
         words = self.tokenize(line)
-        
-        # Replace masked word with None for prediction
-        if masked_word_index >= 0 and masked_word_index < len(words):
+
+        # If list of indices provided, return list of predictions
+        if isinstance(masked_word_index, (list, tuple)):
+            predictions = []
+            for idx in masked_word_index:
+                if idx >= 0 and idx < len(words):
+                    proc = words.copy()
+                    proc[idx] = None
+                    predictions.append(self.predict(proc, idx))
+                else:
+                    predictions.append(None)
+            return predictions
+
+        # Single index case
+        if isinstance(masked_word_index, int) and masked_word_index >= 0 and masked_word_index < len(words):
             processed_words = words.copy()
             processed_words[masked_word_index] = None
             return self.predict(processed_words, masked_word_index)
-        
+
         return None
 
 

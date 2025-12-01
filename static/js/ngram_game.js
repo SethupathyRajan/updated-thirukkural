@@ -6,18 +6,22 @@ var userTimerStart = null;
 var userTimerInterval = null;
 var userTimeMs = 0;
 var gameState = 'waiting'; // 'waiting', 'playing', 'submitted', 'results'
+var selectedOptions = {}; // selections keyed by masked index string
+
+// Helper: Fisher-Yates shuffle
+function shuffleArray(arr) {
+    for (var i = arr.length - 1; i > 0; i--) {
+        var j = Math.floor(Math.random() * (i + 1));
+        var temp = arr[i];
+        arr[i] = arr[j];
+        arr[j] = temp;
+    }
+}
 
 // Initialize game on page load
 $(document).ready(function() {
     loadNewKural();
     loadLeaderboard();
-    
-    // Allow Enter key to submit answer
-    $('#user-answer-input').on('keypress', function(e) {
-        if (e.which === 13) { // Enter key
-            submitUserAnswer();
-        }
-    });
 });
 
 /**
@@ -28,13 +32,12 @@ function loadNewKural() {
     gameState = 'waiting';
     userTimeMs = 0;
     currentKural = null;
-    $('#user-answer-input').val('');
-    $('#user-answer-input').prop('disabled', false);
     $('#submit-answer-btn').show();
     $('#next-kural-btn').hide();
     $('#results-container').hide();
     $('#kural-vilakam-container').hide();
     $('#timer-display').text('0.0');
+    selectedOptions = {};
     
     // Clear any existing timer
     if (userTimerInterval) {
@@ -49,7 +52,52 @@ function loadNewKural() {
         dataType: 'json',
         success: function(response) {
             currentKural = response;
-            displayMaskedLine(response.masked_line);
+            // show adhigaram and full lines
+            $('#aadhigaram-name').text(response.aadhigaram || '-');
+            // hide full kural lines and show only masked kural in Thirukkural format (4-3)
+            $('#kural-line1').text('');
+            $('#kural-line2').text('');
+            var masked = response.masked_line || '';
+            // split into words and format into 4 + rest (commonly 4-3 for kural)
+            var words = masked.split(' ').filter(function(w){ return w.trim().length>0; });
+            var first = words.slice(0,4).join(' ');
+            var second = words.slice(4).join(' ');
+            var display = '';
+            if (second) display = '<p class="kural">' + first + '</p><p class="kural">' + second + '</p>';
+            else display = '<p class="kural">' + first + '</p>';
+            $('#masked-line-text').html(display);
+
+            // render options for each masked index into options-0, options-1 using fillups-style pool
+            $('.option-tiles').empty();
+            selectedOptions = {};
+            var options_pool = ["நீடுவாழ்", "யாண்டும்", "தாள்சேர்ந்தார்க்", "இனிய", "பயன்என்று",
+                "உளரென்று", "அன்போடு", "மணியினும்", "செல்வத்துள்", "சான்றோர்",
+                "மிகுத்து", "பெருக்கல்", "கேடில்லை", "இல்லாள்தன்", "நாடொறும்",
+                "மறந்தும்", "காதன்மை", "வாய்மை", "பொருட்டால்", "கேள்வி",
+                "மாண்ட", "படிபொறை", "தம்மைப்", "உளராக", "இடும்பை",
+                "சால்பின்", "துறந்தார்", "கொடியன", "நாணுடைமை", "விரும்பி",
+                "குழவி", "அம்மா", "நுகர்வார்", "அறத்தான்", "மாண்பு",
+                "தொடர்ந்து", "விளக்கம்", "முன்னேறல்", "நிலைமை", "ஒழுக்கம்",
+                "பிறப்பொடு", "துன்பம்", "தோன்றும்", "உணர்ச்சி", "உயர்ச்சி",
+                "அடக்கம்", "செல்வம்", "பெருமை", "நன்றி"];
+            var masked = response.masked_indices || [];
+            masked.forEach(function(idx, pos) {
+                var key = String(idx);
+                var container = '#options-' + pos;
+                $(container).empty();
+                // create choices: 3 random from pool + correct word
+                var pool = options_pool.filter(function(w){ return w !== response.correct_words[key]; });
+                shuffleArray(pool);
+                var choices = pool.slice(0,3);
+                choices.push(response.correct_words[key]);
+                shuffleArray(choices);
+                choices.forEach(function(choice) {
+                    var tile = $('<button>').addClass('option-tile').text(choice).css({padding:'8px 12px', borderRadius:'8px', border:'1px solid #333', background:'#fff'});
+                    tile.on('click', function(){ selectOption(key, choice, container, tile); });
+                    $(container).append(tile);
+                });
+            });
+
             startUserTimer();
             gameState = 'playing';
         },
@@ -102,23 +150,28 @@ function submitUserAnswer() {
     if (gameState !== 'playing' || !currentKural) {
         return;
     }
-    
-    var userAnswer = $('#user-answer-input').val().trim();
-    if (!userAnswer) {
-        alert('தயவுசெய்து ஒரு விடையை உள்ளிடுக.');
+    // Build user answers array in the same order as masked_indices
+    var maskedIdxs = currentKural.masked_indices || [];
+    var userAnswers = [];
+    for (var i=0;i<maskedIdxs.length;i++){
+        var key = String(maskedIdxs[i]);
+        var ans = selectedOptions[key] || '';
+        userAnswers.push(ans);
+    }
+    // Validate selections
+    var allSelected = userAnswers.every(function(a){ return a && a.length>0; });
+    if (!allSelected) {
+        alert('தயவுசெய்து ஒவ்வொரு இடத்திற்கும் விடையை தேர்வு செய்க.');
         return;
     }
-    
+
     // Stop user timer
     stopUserTimer();
     gameState = 'submitted';
-    
-    // Disable input and submit button
-    $('#user-answer-input').prop('disabled', true);
     $('#submit-answer-btn').hide();
-    
+
     // Get machine prediction
-    getMachinePrediction(userAnswer);
+    getMachinePrediction(userAnswers);
 }
 
 /**
@@ -133,17 +186,18 @@ function getMachinePrediction(userAnswer) {
         contentType: 'application/json',
         data: JSON.stringify({
             masked_line: currentKural.masked_line,
-            masked_index: currentKural.masked_index
+            masked_indices: currentKural.masked_indices
         }),
         dataType: 'json',
         success: function(response) {
             var machineTimeMs = response.machine_time_ms || (Date.now() - machineStartTime);
-            displayResults(userAnswer, response.prediction, machineTimeMs);
+            var predictions = response.predictions || [];
+            displayResults(userAnswer, predictions, machineTimeMs);
         },
         error: function(xhr, status, error) {
             console.error('Error getting prediction:', error);
             // Still display results with empty prediction
-            displayResults(userAnswer, '', 0);
+            displayResults(userAnswer, [], 0);
         }
     });
 }
@@ -152,33 +206,42 @@ function getMachinePrediction(userAnswer) {
  * Display comparison results
  */
 function displayResults(userAnswer, machinePrediction, machineTimeMs) {
-    var correctWord = currentKural.correct_word;
-    var userCorrect = (userAnswer === correctWord);
-    var machineCorrect = (machinePrediction === correctWord);
-    
-    // Display user result
-    var userResultText = userCorrect ? 
-        '✓ சரி!' : 
-        '✗ தவறு';
-    var userResultColor = userCorrect ? 'green' : 'red';
-    $('#user-result').html('<span style="color: ' + userResultColor + '; font-size: 20px;">' + 
-        userResultText + '</span><br>' + userAnswer);
+    var maskedIdxs = currentKural.masked_indices || [];
+    var correctWords = currentKural.correct_words || {};
+
+    var userAnswers = Array.isArray(userAnswer) ? userAnswer : [userAnswer];
+    var machineAnswers = Array.isArray(machinePrediction) ? machinePrediction : [machinePrediction];
+
+    var userHtml = '';
+    var machineHtml = '';
+    var userCorrectAll = true;
+    var machineCorrectAll = true;
+    for (var i=0;i<maskedIdxs.length;i++){
+        var idx = maskedIdxs[i];
+        var key = String(idx);
+        var correct = correctWords[key] || '';
+        var uAns = userAnswers[i] || '';
+        var mAns = machineAnswers[i] || '';
+        var uCorrect = (uAns === correct);
+        var mCorrect = (mAns === correct);
+        if (!uCorrect) userCorrectAll = false;
+        if (!mCorrect) machineCorrectAll = false;
+        userHtml += '<div>' + (uCorrect ? '✓' : '✗') + ' ' + (uAns || '(none)') + '</div>';
+        machineHtml += '<div>' + (mCorrect ? '✓' : '✗') + ' ' + (mAns || '(none)') + '</div>';
+    }
+
+    $('#user-result').html(userHtml);
     $('#user-time').text('நேரம்: ' + (userTimeMs / 1000).toFixed(2) + ' வினாடிகள்');
-    
-    // Display machine result
-    var machineResultText = machineCorrect ? 
-        '✓ சரி!' : 
-        '✗ தவறு';
-    var machineResultColor = machineCorrect ? 'green' : 'red';
-    $('#machine-result').html('<span style="color: ' + machineResultColor + '; font-size: 20px;">' + 
-        machineResultText + '</span><br>' + (machinePrediction || '(கணிப்பு இல்லை)'));
+
+    $('#machine-result').html(machineHtml);
     $('#machine-time').text('நேரம்: ' + (machineTimeMs / 1000).toFixed(2) + ' வினாடிகள்');
+
+    // Display correct words
+    var correctHtml = 'சரி: ';
+    maskedIdxs.forEach(function(idx,i){ correctHtml += (currentKural.correct_words[String(idx)] || '') + (i<maskedIdxs.length-1? ', ':''); });
+    $('#correct-word-display').text(correctHtml);
     
-    // Display correct word
-    $('#correct-word-display').text('சரியான விடை: ' + correctWord);
-    
-    // Show results
-    $('#results-container').show();
+    // Results container is inline in the card; no separate container to show.
     
     // Show kural explanation
     if (currentKural.porul) {
@@ -188,10 +251,18 @@ function displayResults(userAnswer, machinePrediction, machineTimeMs) {
     // Show next button
     $('#next-kural-btn').show();
     
-    // Submit score to server
-    submitScore(userAnswer, machinePrediction, machineTimeMs, userCorrect, machineCorrect);
-    
+    // Submit score to server (send arrays)
+    submitScore(userAnswers, machineAnswers, machineTimeMs, userCorrectAll, machineCorrectAll);
+
     gameState = 'results';
+}
+
+/** Select option tile for a masked index */
+function selectOption(idxKey, choice, container, tileEl){
+    selectedOptions[idxKey] = choice;
+    // visually mark selection in container
+    $(container).find('.option-tile').css({background:'#fff', color:'#000'});
+    tileEl.css({background:'#2b7cff', color:'#fff'});
 }
 
 /**
@@ -216,24 +287,26 @@ function displayKuralExplanation(porul) {
  * Submit score to server
  */
 function submitScore(userAnswer, machinePrediction, machineTimeMs, userCorrect, machineCorrect) {
+    // Build correct_words map from currentKural.correct_words if present
+    var payload = {
+        kural_id: currentKural.kural_id,
+        correct_words: currentKural.correct_words || {},
+        user_answer: userAnswer,
+        machine_prediction: machinePrediction,
+        user_time_ms: userTimeMs,
+        machine_time_ms: machineTimeMs,
+        user_correct: userCorrect,
+        machine_correct: machineCorrect
+    };
+
     $.ajax({
         url: '/ngram/submit_score',
         type: 'POST',
         contentType: 'application/json',
-        data: JSON.stringify({
-            kural_id: currentKural.kural_id,
-            correct_word: currentKural.correct_word,
-            user_answer: userAnswer,
-            machine_prediction: machinePrediction,
-            user_time_ms: userTimeMs,
-            machine_time_ms: machineTimeMs,
-            user_correct: userCorrect,
-            machine_correct: machineCorrect
-        }),
+        data: JSON.stringify(payload),
         dataType: 'json',
         success: function(response) {
             console.log('Score submitted successfully');
-            // Optionally reload leaderboard
             loadLeaderboard();
         },
         error: function(xhr, status, error) {
@@ -255,9 +328,8 @@ function loadLeaderboard() {
         },
         error: function(xhr, status, error) {
             console.error('Error loading leaderboard:', error);
-            $('#leaderboard-table').html(
-                '<tr><td colspan="4" style="text-align: center; padding: 20px;">Leaderboard ஏற்றுவதில் பிழை</td></tr>'
-            );
+                    // show error message in the tbody without touching the table header
+                    $('#leaderboard-body').html('<tr><td colspan="4" style="text-align: center; padding: 20px;">Leaderboard ஏற்றுவதில் பிழை</td></tr>');
         }
     });
 }
@@ -266,27 +338,26 @@ function loadLeaderboard() {
  * Display leaderboard data
  */
 function displayLeaderboard(leaderboard) {
-    var tableHtml = '<tr class="leaderboard-heading">' +
-        '<th>Rank</th>' +
-        '<th class="user-name">User Name</th>' +
-        '<th class="diamond-points">Correct</th>' +
-        '<th class="diamond-points">Avg Time</th>' +
-        '</tr>';
-    
-    if (leaderboard.length === 0) {
-        tableHtml += '<tr><td colspan="4" style="text-align: center; padding: 20px;">இன்னும் எவரும் விளையாடவில்லை</td></tr>';
+    // Build rows and inject into tbody to preserve the table header and layout
+    var rowsHtml = '';
+
+    if (!Array.isArray(leaderboard) || leaderboard.length === 0) {
+        rowsHtml = '<tr><td colspan="4" style="text-align: center; padding: 20px;">இன்னும் எவரும் விளையாடவில்லை</td></tr>';
     } else {
         leaderboard.forEach(function(entry) {
-            var avgTimeSeconds = (entry.avg_time_ms / 1000).toFixed(2);
-            tableHtml += '<tr>' +
-                '<td class="rank">#' + entry.rank + '</td>' +
-                '<td class="user-name">' + (entry.user_name || 'Anonymous') + '</td>' +
-                '<td class="diamond-points">' + entry.total_correct + '</td>' +
-                '<td class="diamond-points">' + avgTimeSeconds + 's</td>' +
+            var avgTimeSeconds = '0.00';
+            if (entry.avg_time_ms) {
+                avgTimeSeconds = (entry.avg_time_ms / 1000).toFixed(2);
+            }
+            rowsHtml += '<tr>' +
+                '<td class="rank" style="padding:8px 6px;">#' + (entry.rank || '') + '</td>' +
+                '<td class="user-name" style="padding:8px 6px;">' + (entry.user_name || 'Anonymous') + '</td>' +
+                '<td class="diamond-points" style="text-align:center; padding:8px 6px;">' + (entry.total_correct || 0) + '</td>' +
+                '<td class="diamond-points" style="text-align:center; padding:8px 6px;">' + avgTimeSeconds + 's</td>' +
                 '</tr>';
         });
     }
-    
-    $('#leaderboard-table').html(tableHtml);
+
+    $('#leaderboard-body').html(rowsHtml);
 }
 
